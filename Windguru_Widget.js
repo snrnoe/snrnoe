@@ -10,8 +10,8 @@
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.4.0";
-const WIDGET_BUILD   = "2026-05-21";
+const WIDGET_VERSION = "2.5.2";
+const WIDGET_BUILD   = "2026-05-22";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
 // Kann von Tools per JSON.parse(WIDGET_META) ausgewertet werden.
@@ -37,6 +37,11 @@ const WIDGET_META = JSON.stringify({
 });
 
 // Changelog (Kurzform):
+//   2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)
+//   2.5.1  Kompass: Nadel auf Ring, blauer Ring fix, rote Nadel, nur N/O/S/W
+//   2.5.0  Windrose-Kompass: klassisches Marine-Design
+//   2.4.2  Kitefenster: Wind ≥ 10kn, Böen ≤ 30kn
+//   2.4.0  Layout-Entschlackung: alle Höhenbudgets kalibriert
 //   2.3.0  Footer: bestes Kitefenster (11–17 kn, min. Böen-Spreizung) statt nächste 3h
 //   2.2.0  Header: Spot+Zeit links gestapelt, Kompass ganz rechts; Main: Labels unter Zahlen
 //   2.1.0  Layout-Fix Small: Header 1-zeilig, Kompass 44px, Footer-Spalten
@@ -90,37 +95,6 @@ function kiteStatus(kn) {
   if (kn < 25) return { color: windColor(kn), label: "kitebar" };
   return { color: windColor(kn), label: "zu stark" };
 }
-
-// Tendenz aus den nächsten ~3h: steigt / fällt / stabil
-function windTrend(future) {
-  if (!future || future.length < 2) return { arrow: "", color: new Color("#5a7d96") };
-  const now = future[0].wind;
-  // Mittel der nächsten 2–3 Werte
-  const ahead = future.slice(1, 4).filter(p => p.wind != null);
-  if (ahead.length === 0) return { arrow: "", color: new Color("#5a7d96") };
-  const avg = ahead.reduce((s, p) => s + p.wind, 0) / ahead.length;
-  const diff = avg - now;
-  if (diff >= 2)  return { arrow: "▲", color: new Color("#00e676") };
-  if (diff <= -2) return { arrow: "▼", color: new Color("#ff8a65") };
-  return { arrow: "▶", color: new Color("#9fb3c0") };
-}
-
-// Tages-Peak im Fenster 7–18 Uhr finden
-function dayPeak(series) {
-  const nowMs = Date.now();
-  let best = null;
-  for (const p of series) {
-    if (p.wind == null) continue;
-    if (p.time.getTime() < nowMs - 3600 * 1000) continue;
-    const hh = p.time.getHours();
-    if (hh < HOUR_START || hh > HOUR_END) continue;
-    // nur heutiger Tag
-    if (p.time.toDateString() !== new Date().toDateString()) continue;
-    if (!best || p.wind > best.wind) best = p;
-  }
-  return best;
-}
-
 
 // Farbcode nach Wind (immer der Wind ist der Indikator):
 //   blau  < 9 kn   – wenig
@@ -399,19 +373,6 @@ function addTitle(widget, spot, big, stale) {
   }
 }
 
-// nächster Vorhersagepunkt im Fenster 7–19 Uhr (ab jetzt)
-function nextInWindow(series) {
-  const nowMs = Date.now();
-  for (const p of series) {
-    if (p.time.getTime() <= nowMs + 1800 * 1000) continue; // echt in der Zukunft
-    if (p.wind == null) continue;
-    const hh = p.time.getHours();
-    if (hh < HOUR_START || hh > HOUR_END) continue;
-    return p;
-  }
-  return null;
-}
-
 // Bestes Kitefenster: zusammenhängende Stunden mit 11–17 kn,
 // minimale Böen-Spreizung (max(gust) – min(wind) als Qualitätsmaß).
 // Gibt { slots, avgWind, avgGust, spread, dir } oder null zurück.
@@ -598,15 +559,6 @@ function fixedCell(rowStack, width, build) {
   cell.centerAlignContent();
   build(cell);
   cell.addSpacer();
-}
-
-// Zelle mit fester Breite, Inhalt rechtsbündig
-function fixedCellRight(rowStack, width, build) {
-  const cell = rowStack.addStack();
-  cell.size = new Size(width, 16);
-  cell.centerAlignContent();
-  cell.addSpacer();
-  build(cell);
 }
 
 // Kompakte Footer-Zeile: ● | Zeit | Wind | Richtung
