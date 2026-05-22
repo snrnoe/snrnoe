@@ -140,6 +140,24 @@ Spot per Widget-Parameter wählen: Index (0–4), Name oder ID.
 
 ## Deployment
 
+Es gibt zwei Wege, das Widget auf dem iPhone laufen zu lassen:
+
+### A) Remote-Loader (empfohlen, self-updating)
+
+`Windguru_Widget_Loader.js` ist ein ~30-zeiliger Bootstrap, der den aktuellen
+`Windguru_Widget.js` aus dem Repo lädt und ausführt. Einmal in Scriptable
+einfügen — danach kommen Updates automatisch beim nächsten Widget-Refresh.
+
+- `SOURCE_URL` zeigt auf den Raw-Link der gewünschten Branch
+- Lokaler Cache (`FileManager.local().cacheDirectory()/windguru_remote_widget.js`)
+  als Offline-Fallback
+- Cache-Bust per `?_=<timestamp>` gegen GitHub-CDN
+- Geladener Code läuft via `new AsyncFunction(code)()` im selben Script-Kontext,
+  erbt also `args`, `config`, `ListWidget`, `DrawContext`, `FileManager`, …
+- Widget-Parameter (Spotname/Index/ID) werden automatisch durchgereicht
+
+### B) Direkt-Kopie
+
 1. `Windguru_Widget.js` in Scriptable App kopieren (iCloud oder direkt)
 2. **Homescreen-Widget:** Scriptable-Widget hinzufügen → Größe wählen → Parameter = Spotname oder Index
 3. **Sperrbildschirm-Widget:** Sperrbildschirm anpassen → Widget hinzufügen → Scriptable → kreisförmige Größe (accessoryCircular) → Parameter = Spotname oder Index
