@@ -2,10 +2,10 @@
 
 ## Projektübersicht
 
-Scriptable-Widget für iPhone Homescreen. Zeigt Windguru-Forecast für Kitespots
-in Sardinien. Drei Größen: Small / Medium / Large.
+Scriptable-Widget für iPhone Homescreen und Sperrbildschirm. Zeigt Windguru-Forecast
+für Kitespots in Sardinien. Vier Größen: Small / Medium / Large + accessoryCircular.
 
-**Aktuelle Version:** 2.5.2
+**Aktuelle Version:** 2.6.0
 **Hauptdatei:** `Windguru_Widget.js` → kopieren nach Scriptable App auf dem iPhone
 
 -----
@@ -14,15 +14,18 @@ in Sardinien. Drei Größen: Small / Medium / Large.
 
 ```
 Windguru_Widget.js
-├── KONFIGURATION          Spots, Modelle, Tagesfenster (7–19 Uhr)
-├── HILFSFUNKTIONEN        windColor, kiteStatus, windTrend, dirLabel, ...
-├── drawCompass()          Windrose-Kompass via DrawContext
-├── makeGlowBase()         Apple-Style Hintergrund (Glow-Effekt)
-├── bestKiteWindow()       Algorithmus: bestes Kitefenster des Tages
-├── renderSmall()          Small-Widget Layout
-├── renderMedium()         Medium-Widget Layout
-├── renderLarge()          Large-Widget Layout
-└── buildWidget()          Haupt-Entry-Point
+├── KONFIGURATION              Spots, Modelle, Tagesfenster (7–19), Lock-Fenster (9–17)
+├── HILFSFUNKTIONEN            windColor, kiteStatus, dirLabel, ...
+├── drawCompass()              Windrose-Kompass via DrawContext (Homescreen)
+├── drawLockCircle()           Sperrbildschirm-Ring + Punkt + Peak-Zahl
+├── makeGlowBase()             Apple-Style Hintergrund (Glow-Effekt)
+├── bestKiteWindow()           Algorithmus: bestes Kitefenster des Tages
+├── dayPeakInRange()           Tages-Peak (Wind) im beliebigen Stundenfenster
+├── renderSmall()              Small-Widget Layout
+├── renderMedium()             Medium-Widget Layout
+├── renderLarge()              Large-Widget Layout
+├── renderAccessoryCircular()  Sperrbildschirm-Widget (Lockscreen)
+└── buildWidget()              Haupt-Entry-Point
 ```
 
 -----
@@ -99,12 +102,22 @@ Spot per Widget-Parameter wählen: Index (0–4), Name oder ID.
 
 - Tagesübersicht 7–19 Uhr, 2h-Raster, Tagestrenner
 
+### accessoryCircular (Sperrbildschirm)
+
+- Einzelnes DrawContext-Bild (kein Stack-Layout, da iOS oft monochrom tönt)
+- Ring (Weiß @55% Alpha), N-Marker oben (Weiß @90%)
+- Punkt auf dem Ring an der Windrichtung des Peak-Slots (wohin der Wind weht — konsistent zur roten Nadel im Homescreen-Kompass)
+- Mitte: Tages-Peak Wind als Zahl + "kn" darunter
+- Peak-Zeitfenster: **09–17 Uhr heute** (`LOCK_HOUR_START` / `LOCK_HOUR_END`)
+- Bei fehlenden Daten: "—" mittig
+
 -----
 
 ## Versionierung
 
 ```
-2.5.2  Bugfix: orphaned code fragment nach drawCompass entfernt
+2.6.0  Sperrbildschirm-Widget (accessoryCircular): Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
+2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)
 2.5.1  Kompass: Nadel auf Ring, blauer Ring fix, rote Nadel, nur N/O/S/W
 2.5.0  Windrose-Kompass: klassisches Marine-Design
 2.4.2  Kitefenster: Wind ≥ 10kn, Böen ≤ 30kn
@@ -128,8 +141,9 @@ Spot per Widget-Parameter wählen: Index (0–4), Name oder ID.
 ## Deployment
 
 1. `Windguru_Widget.js` in Scriptable App kopieren (iCloud oder direkt)
-2. Widget auf Homescreen: Größe wählen → Parameter = Spotname oder Index
-3. Preview in Scriptable: Play-Button → öffnet Small-Vorschau
+2. **Homescreen-Widget:** Scriptable-Widget hinzufügen → Größe wählen → Parameter = Spotname oder Index
+3. **Sperrbildschirm-Widget:** Sperrbildschirm anpassen → Widget hinzufügen → Scriptable → kreisförmige Größe (accessoryCircular) → Parameter = Spotname oder Index
+4. Preview in Scriptable: Play-Button → öffnet Small-Vorschau (für accessoryCircular `config.widgetFamily` setzen)
 
 -----
 

@@ -2,15 +2,17 @@
 // WINDGURU WIDGET für Scriptable — Sardinien
 // Spots: La Cinta, Porto Pino, La Caletta, Chia, Porto Pollo
 // Größenabhängiges Layout:
-//   • Small  → Standort + aktueller Wert + Kompass + 3h-Forecast
-//   • Medium → nächste 4h, stündlich
-//   • Large  → Tagesübersicht 7–19 Uhr, 2h-Raster
+//   • Small             → Standort + aktueller Wert + Kompass + 3h-Forecast
+//   • Medium            → nächste 4h, stündlich
+//   • Large             → Tagesübersicht 7–19 Uhr, 2h-Raster
+//   • accessoryCircular → Sperrbildschirm: Kompass-Ring mit Richtungs-Punkt,
+//                         Tages-Peak (09–17 Uhr) als Zahl in der Mitte
 // Datenquelle: iapi.php?q=forecast (GFS → ICON → Zephr-HD Fallback)
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.5.2";
+const WIDGET_VERSION = "2.6.0";
 const WIDGET_BUILD   = "2026-05-22";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
@@ -20,7 +22,7 @@ const WIDGET_META = JSON.stringify({
   version: WIDGET_VERSION,
   build: WIDGET_BUILD,
   platform: "scriptable",
-  sizes: ["small", "medium", "large"],
+  sizes: ["small", "medium", "large", "accessoryCircular"],
   dataSource: "windguru.cz/int/iapi.php",
   models: [3, 45, 64],
   features: [
@@ -30,13 +32,16 @@ const WIDGET_META = JSON.stringify({
     "compass-vane",
     "offline-cache",
     "tap-to-open",
-    "stale-indicator"
+    "stale-indicator",
+    "lockscreen-circular"
   ],
   windColorScale: { blue: "<9kn", green: "9-15kn", yellow: "15-25kn", red: ">25kn" },
-  dayWindow: { start: 7, end: 19 }
+  dayWindow: { start: 7, end: 19 },
+  lockWindow: { start: 9, end: 17 }
 });
 
 // Changelog (Kurzform):
+//   2.6.0  Sperrbildschirm-Widget (accessoryCircular): Kompass-Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
 //   2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)
 //   2.5.1  Kompass: Nadel auf Ring, blauer Ring fix, rote Nadel, nur N/O/S/W
 //   2.5.0  Windrose-Kompass: klassisches Marine-Design
@@ -79,6 +84,8 @@ const MODELS = [3, 45, 64]; // GFS 13km → ICON 13km → Zephr-HD
 const HOUR_START = 7;       // Tagesfenster Beginn (7–19 Uhr)
 const HOUR_END   = 19;      // Tagesfenster Ende (7–19 Uhr)
 const LARGE_STEP = 2;       // Large: 2h-Raster
+const LOCK_HOUR_START = 9;  // Sperrbildschirm: Peak-Fenster Beginn
+const LOCK_HOUR_END   = 17; // Sperrbildschirm: Peak-Fenster Ende
 
 
 // ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
@@ -426,6 +433,100 @@ function bestKiteWindow(series) {
   return best;
 }
 
+// Tages-Peak (heute) im übergebenen Stundenfenster
+function dayPeakInRange(series, hStart, hEnd) {
+  const today = new Date().toDateString();
+  let best = null;
+  for (const p of series) {
+    if (p.wind == null) continue;
+    if (p.time.toDateString() !== today) continue;
+    const hh = p.time.getHours();
+    if (hh < hStart || hh > hEnd) continue;
+    if (!best || p.wind > best.wind) best = p;
+  }
+  return best;
+}
+
+// ─── Sperrbildschirm: accessoryCircular ─────────────────────────────────────
+// Ring + N-Marker + Punkt an Windrichtung (wohin der Wind weht) + Peak-Zahl mittig.
+// iOS tönt das Bild auf dem Lockscreen meist einfarbig ein → nur Weiß + Alphas.
+function drawLockCircle(dir, peakKn, size) {
+  const dc = new DrawContext();
+  dc.size = new Size(size, size);
+  dc.opaque = false;
+  dc.respectScreenScale = true;
+
+  const c       = size / 2;
+  const rRing   = size * 0.46;
+  const ringW   = size * 0.045;
+  const tickLen = size * 0.06;
+  const dotR    = size * 0.085;
+
+  // Hauptring
+  dc.setStrokeColor(new Color("#ffffff", 0.55));
+  dc.setLineWidth(ringW);
+  const ring = new Path();
+  ring.addEllipse(new Rect(c - rRing, c - rRing, rRing * 2, rRing * 2));
+  dc.addPath(ring);
+  dc.strokePath();
+
+  // N-Marker oben
+  dc.setStrokeColor(new Color("#ffffff", 0.9));
+  dc.setLineWidth(size * 0.035);
+  const tick = new Path();
+  tick.move(new Point(c, c - rRing - tickLen * 0.5));
+  tick.addLine(new Point(c, c - rRing + tickLen * 0.5));
+  dc.addPath(tick);
+  dc.strokePath();
+
+  // Windrichtungs-Punkt auf dem Ring (wohin der Wind weht — wie die rote Nadel)
+  if (dir != null && !isNaN(dir)) {
+    const blowTo = (dir + 180) % 360;
+    const rad    = (blowTo - 90) * Math.PI / 180;
+    const dx = c + rRing * Math.cos(rad);
+    const dy = c + rRing * Math.sin(rad);
+
+    // weißer Punkt mit dunklem Stoßrand (für Kontrast in Vollfarb-Modus)
+    const dot = new Path();
+    dot.addEllipse(new Rect(dx - dotR, dy - dotR, dotR * 2, dotR * 2));
+    dc.setFillColor(Color.white());
+    dc.addPath(dot);
+    dc.fillPath();
+  }
+
+  // Peak-Wind in der Mitte
+  dc.setTextAlignedCenter();
+  if (peakKn != null) {
+    dc.setTextColor(Color.white());
+    dc.setFont(Font.boldSystemFont(size * 0.36));
+    const txtH = size * 0.42;
+    dc.drawTextInRect(String(peakKn), new Rect(0, c - txtH * 0.58, size, txtH));
+
+    dc.setTextColor(new Color("#ffffff", 0.7));
+    dc.setFont(Font.semiboldSystemFont(size * 0.13));
+    dc.drawTextInRect("kn", new Rect(0, c + size * 0.10, size, size * 0.16));
+  } else {
+    dc.setTextColor(new Color("#ffffff", 0.6));
+    dc.setFont(Font.boldSystemFont(size * 0.28));
+    dc.drawTextInRect("—", new Rect(0, c - size * 0.18, size, size * 0.36));
+  }
+
+  return dc.getImage();
+}
+
+function renderAccessoryCircular(widget, series) {
+  widget.setPadding(0, 0, 0, 0);
+  widget.backgroundColor = new Color("#000000", 0);
+
+  const peak = dayPeakInRange(series, LOCK_HOUR_START, LOCK_HOUR_END);
+  const dir  = peak ? peak.dir : null;
+  const kn   = peak ? peak.wind : null;
+
+  const img = drawLockCircle(dir, kn, 234);
+  const imgView = widget.addImage(img);
+  imgView.applyFittingContentMode();
+}
+
 
 function renderSmall(widget, spot, series, stale) {
   const nowMs = Date.now();
@@ -724,10 +825,12 @@ async function buildWidget() {
 
   const series = parseSeries(result);
   const modelName = result.data.wgmodel ? result.data.wgmodel.model_name : ("Modell " + result.model);
-  const family = config.widgetFamily; // "small" | "medium" | "large" | undefined
+  const family = config.widgetFamily; // "small" | "medium" | "large" | "accessoryCircular" | undefined
   const stale = !!result.fromCache;
 
-  if (family === "small") {
+  if (family === "accessoryCircular") {
+    renderAccessoryCircular(widget, series);
+  } else if (family === "small") {
     renderSmall(widget, spot, series, stale);
   } else if (family === "large") {
     renderLarge(widget, spot, series, modelName, stale);
@@ -754,6 +857,7 @@ if (config.runsInWidget) {
   const fam = config.widgetFamily;
   if (fam === "medium") widget.presentMedium();
   else if (fam === "large") widget.presentLarge();
+  else if (fam === "accessoryCircular") widget.presentAccessoryCircular();
   else widget.presentSmall();
 }
 Script.complete();
