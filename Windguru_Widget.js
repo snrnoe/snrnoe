@@ -458,7 +458,7 @@ function drawLockCircle(dir, peakKn, size) {
 
   const c       = size / 2;
   const rRing   = size * 0.46;
-  const ringW   = size * 0.045;
+  const ringW   = size * 0.022;
   const tickLen = size * 0.06;
   const dotR    = size * 0.085;
 
