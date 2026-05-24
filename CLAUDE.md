@@ -2,10 +2,11 @@
 
 ## Projektübersicht
 
-Scriptable-Widget für iPhone Homescreen und Sperrbildschirm. Zeigt Windguru-Forecast
-für Kitespots in Sardinien. Vier Größen: Small / Medium / Large + accessoryCircular.
+Scriptable-Widget für iPhone Homescreen und Sperrbildschirm. Zeigt Wind-Forecast
+für Kitespots in Sardinien (Windy ECMWF) und Holland (Windguru).
+Vier Größen: Small / Medium / Large + accessoryCircular.
 
-**Aktuelle Version:** 2.6.0
+**Aktuelle Version:** 2.7.0
 **Hauptdatei:** `Windguru_Widget.js` → kopieren nach Scriptable App auf dem iPhone
 
 -----
@@ -32,16 +33,44 @@ Windguru_Widget.js
 
 ## Technische Entscheidungen
 
-### API
+### Datenquellen (Multi-Source-Routing, seit 2.7.0)
+
+Pro Spot wird aus Lat/Lon abgeleitet, welche API zuständig ist
+(`pickSource(spot)`, optional per `spot.source` überschreibbar):
+
+- **Italien (Bounding-Box inkl. Sardinien)** → Windy
+- **Niederlande**                            → Windguru
+- **sonst**                                  → Windguru (Default)
+
+Ergebnis-Shape ist quellen-agnostisch: `{ data, model, source, fromCache?, savedAt? }`.
+`parseSeries(result)` dispatcht nach `result.source` und liefert immer dieselbe
+Zeitreihe `[{ time, wind (kn), gust (kn), dir (° meteorologisch) }, …]`.
+
+#### Windy API (Sardinien-Default)
+
+- Endpunkt: `POST https://api.windy.com/api/point-forecast/v2`
+- Modell: `ecmwf` (alternativ `gfs`, `iconEu`, `arome` via `WINDY_MODEL`)
+- Parameter: `wind`, `windGust`, Level `surface`
+- Antwort: `ts[]`, `wind_u-surface[]`, `wind_v-surface[]`, `gust-surface[]` in m/s
+- Umrechnung: `wind = √(u²+v²) · 1.9438`, `dir = (180 + atan2(u,v)·180/π) mod 360`
+- **API-Key** liegt im iOS-Keychain unter `WINDY_API_KEY`
+  (einmaliges Setup-Script `Keychain.set("WINDY_API_KEY", "…")`).
+  Key **nie** ins Repo committen.
+- Free-Tier: 500 Requests/Tag (5 Spots × ~24 Refreshes ≈ 120/d → reicht locker)
+- Fallback bei Windy-Fehler: automatischer Notfall-Versuch über Windguru
+- Fallback bei Netzfehler: lokaler Cache
+
+#### Windguru iapi.php (Holland-Default + Notfall-Fallback)
 
 - Endpunkt: `https://www.windguru.cz/int/iapi.php?q=forecast&id_spot=<ID>&id_model=<M>`
 - Modell-Fallback: GFS 13km (3) → ICON 13km (45) → Zephr-HD (64)
-- Windfeld: `WINDSPD`, Böen: `GUST`, Richtung: `WINDDIR`
+- Windfeld: `WINDSPD` (kn), Böen: `GUST` (kn), Richtung: `WINDDIR` (°)
 - Login nicht nötig; User-Agent + Referer-Header erforderlich
 
 ### Offline-Cache
 
-- `FileManager.local()` → `cacheDirectory()/windguru_cache/spot_<ID>.json`
+- `FileManager.local()` → `cacheDirectory()/windguru_cache/spot_<ID>_<source>.json`
+  (getrennt pro Quelle, damit Windy- und Windguru-Antworten nicht kollidieren)
 - Bei Netzfehler: letzter Cache wird geladen, ⚠︎ im Header angezeigt
 
 ### Windfarben (unveränderlich, nach Wind — nie Böen)
@@ -73,15 +102,17 @@ Windguru_Widget.js
 
 ```js
 const SPOTS = [
-  { id: 49159,  name: "La Cinta"    },
-  { id: 208230, name: "Porto Pino"  },
-  { id: 501232, name: "La Caletta"  },
-  { id: 1522,   name: "Chia"        },
-  { id: 278,    name: "Porto Pollo" },
+  { id: 49159,  name: "La Cinta",    lat: 40.7775, lon: 9.7203 },
+  { id: 208230, name: "Porto Pino",  lat: 38.9419, lon: 8.7806 },
+  { id: 501232, name: "La Caletta",  lat: 40.6094, lon: 9.7547 },
+  { id: 1522,   name: "Chia",        lat: 38.8856, lon: 8.8964 },
+  { id: 278,    name: "Porto Pollo", lat: 41.1819, lon: 9.3458 },
 ];
 ```
 
 Spot per Widget-Parameter wählen: Index (0–4), Name oder ID.
+`lat`/`lon` werden von der Windy-API gebraucht und steuern das Quellen-Routing
+in `pickSource(spot)`. Optional erzwingbar via `source: "windy" | "windguru"`.
 
 -----
 
@@ -116,6 +147,7 @@ Spot per Widget-Parameter wählen: Index (0–4), Name oder ID.
 ## Versionierung
 
 ```
+2.7.0  Multi-Source-Routing: Windy (ECMWF) für IT, Windguru für NL; API-Key im Keychain; SPOTS mit lat/lon
 2.6.0  Sperrbildschirm-Widget (accessoryCircular): Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
 2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)
 2.5.1  Kompass: Nadel auf Ring, blauer Ring fix, rote Nadel, nur N/O/S/W

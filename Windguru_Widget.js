@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// WINDGURU WIDGET für Scriptable — Sardinien
+// WINDGURU / WINDY KITE WIDGET für Scriptable — Sardinien & Holland
 // Spots: La Cinta, Porto Pino, La Caletta, Chia, Porto Pollo
 // Größenabhängiges Layout:
 //   • Small             → Standort + aktueller Wert + Kompass + 3h-Forecast
@@ -7,24 +7,30 @@
 //   • Large             → Tagesübersicht 7–19 Uhr, 2h-Raster
 //   • accessoryCircular → Sperrbildschirm: Kompass-Ring mit Richtungs-Punkt,
 //                         Tages-Peak (09–17 Uhr) als Zahl in der Mitte
-// Datenquelle: iapi.php?q=forecast (GFS → ICON → Zephr-HD Fallback)
+// Datenquelle (pro Spot per Lat/Lon):
+//   • Italien/Sardinien → Windy Point Forecast API (ECMWF; Key aus Keychain)
+//   • Niederlande       → Windguru iapi.php (GFS → ICON → Zephr-HD Fallback)
+//   • sonst             → Windguru als Default
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.6.0";
-const WIDGET_BUILD   = "2026-05-22";
+const WIDGET_VERSION = "2.7.0";
+const WIDGET_BUILD   = "2026-05-24";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
 // Kann von Tools per JSON.parse(WIDGET_META) ausgewertet werden.
 const WIDGET_META = JSON.stringify({
-  name: "Windguru Kite Widget",
+  name: "Windguru/Windy Kite Widget",
   version: WIDGET_VERSION,
   build: WIDGET_BUILD,
   platform: "scriptable",
   sizes: ["small", "medium", "large", "accessoryCircular"],
-  dataSource: "windguru.cz/int/iapi.php",
-  models: [3, 45, 64],
+  dataSources: {
+    windguru: { endpoint: "windguru.cz/int/iapi.php", models: [3, 45, 64] },
+    windy:    { endpoint: "api.windy.com/api/point-forecast/v2", model: "ecmwf" }
+  },
+  sourceRouting: "per-spot by lat/lon (IT→windy, NL→windguru)",
   features: [
     "size-adaptive-layout",
     "wind-color-coding",
@@ -33,7 +39,8 @@ const WIDGET_META = JSON.stringify({
     "offline-cache",
     "tap-to-open",
     "stale-indicator",
-    "lockscreen-circular"
+    "lockscreen-circular",
+    "multi-source-routing"
   ],
   windColorScale: { blue: "<9kn", green: "9-15kn", yellow: "15-25kn", red: ">25kn" },
   dayWindow: { start: 7, end: 19 },
@@ -41,6 +48,7 @@ const WIDGET_META = JSON.stringify({
 });
 
 // Changelog (Kurzform):
+//   2.7.0  Multi-Source: Windy Point Forecast API für Sardinien (ECMWF), Windguru für NL; Routing per Spot-Lat/Lon
 //   2.6.0  Sperrbildschirm-Widget (accessoryCircular): Kompass-Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
 //   2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)
 //   2.5.1  Kompass: Nadel auf Ring, blauer Ring fix, rote Nadel, nur N/O/S/W
@@ -55,15 +63,32 @@ const WIDGET_META = JSON.stringify({
 
 
 // ─── DEINE SPOTS ────────────────────────────────────────────────────────────
-// Neue Spots ergänzen: { id: <Spot-ID>, name: "<Anzeigename>" }
-// Spot-ID steht in der windguru.cz-URL, z.B. windguru.cz/49159
+// Neue Spots ergänzen: { id: <Windguru-Spot-ID>, name: "<Anzeigename>", lat, lon }
+//   • Spot-ID steht in der windguru.cz-URL, z.B. windguru.cz/49159
+//   • lat/lon werden für die Windy-API gebraucht (und fürs Quellen-Routing)
+//   • Optional: source: "windy" | "windguru" überschreibt die Auto-Wahl
 const SPOTS = [
-  { id: 49159,   name: "La Cinta" },
-  { id: 208230,  name: "Porto Pino" },
-  { id: 501232,  name: "La Caletta" },
-  { id: 1522,    name: "Chia" },
-  { id: 278,     name: "Porto Pollo" },
+  { id: 49159,   name: "La Cinta",    lat: 40.7775, lon: 9.7203 },
+  { id: 208230,  name: "Porto Pino",  lat: 38.9419, lon: 8.7806 },
+  { id: 501232,  name: "La Caletta",  lat: 40.6094, lon: 9.7547 },
+  { id: 1522,    name: "Chia",        lat: 38.8856, lon: 8.8964 },
+  { id: 278,     name: "Porto Pollo", lat: 41.1819, lon: 9.3458 },
 ];
+
+// Quellen-Routing: aus den Spot-Koordinaten ableiten, welche API zuständig ist.
+// • Italien (inkl. Sardinien) → Windy   (besseres ECMWF im Mittelmeer)
+// • Niederlande               → Windguru
+// • alles andere              → Windguru als Default
+function pickSource(spot) {
+  if (spot.source === "windy" || spot.source === "windguru") return spot.source;
+  const { lat, lon } = spot;
+  if (lat == null || lon == null) return "windguru";
+  // Italien-Bounding-Box (inkl. Sardinien, Sizilien)
+  if (lat >= 35.5 && lat <= 47.2 && lon >= 6.6 && lon <= 18.6) return "windy";
+  // Niederlande-Bounding-Box
+  if (lat >= 50.7 && lat <= 53.8 && lon >= 3.2 && lon <= 7.4) return "windguru";
+  return "windguru";
+}
 
 // Spot-Auswahl per Widget-Parameter (Index 0..4, Name oder ID). Standard = erster.
 function pickSpot() {
@@ -80,7 +105,10 @@ function pickSpot() {
   return SPOTS[0];
 }
 
-const MODELS = [3, 45, 64]; // GFS 13km → ICON 13km → Zephr-HD
+const MODELS = [3, 45, 64]; // Windguru: GFS 13km → ICON 13km → Zephr-HD
+const WINDY_MODEL = "ecmwf"; // Windy-Modell (alternativ: "gfs", "iconEu", "arome")
+const WINDY_KEYCHAIN = "WINDY_API_KEY"; // Keychain-Schlüssel; per Setup-Script gefüllt
+const MS_TO_KN = 1.9438;
 const HOUR_START = 7;       // Tagesfenster Beginn (7–19 Uhr)
 const HOUR_END   = 19;      // Tagesfenster Ende (7–19 Uhr)
 const LARGE_STEP = 2;       // Large: 2h-Raster
@@ -249,36 +277,58 @@ function drawCompass(deg, size, accentColor) {
   return dc.getImage();
 }
 
-// ─── Daten laden (mit Offline-Cache) ─────────────────────────────────────────
-function cachePath(spotId) {
+// ─── Daten laden (Offline-Cache pro Spot + Quelle) ──────────────────────────
+function cachePath(spotId, source) {
   const fm = FileManager.local();
   const dir = fm.joinPath(fm.cacheDirectory(), "windguru_cache");
   if (!fm.fileExists(dir)) fm.createDirectory(dir, true);
-  return fm.joinPath(dir, "spot_" + spotId + ".json");
+  return fm.joinPath(dir, "spot_" + spotId + "_" + source + ".json");
 }
 
 function saveCache(spotId, result) {
   try {
     const fm = FileManager.local();
-    const payload = { savedAt: Date.now(), model: result.model, data: result.data };
-    fm.writeString(cachePath(spotId), JSON.stringify(payload));
+    const payload = {
+      savedAt: Date.now(),
+      source:  result.source,
+      model:   result.model,
+      data:    result.data
+    };
+    fm.writeString(cachePath(spotId, result.source), JSON.stringify(payload));
   } catch(e) { /* Cache optional */ }
 }
 
-function loadCache(spotId) {
+function loadCache(spotId, source) {
   try {
     const fm = FileManager.local();
-    const p = cachePath(spotId);
+    const p = cachePath(spotId, source);
     if (!fm.fileExists(p)) return null;
     const obj = JSON.parse(fm.readString(p));
-    return { data: obj.data, model: obj.model, fromCache: true, savedAt: obj.savedAt };
+    return {
+      data: obj.data, model: obj.model, source: obj.source || source,
+      fromCache: true, savedAt: obj.savedAt
+    };
   } catch(e) { return null; }
 }
 
-async function fetchForecast(spotId) {
+// Dispatcher: wählt die richtige API und übergibt einheitliches Result-Shape
+//   { data, model, source, fromCache?, savedAt? }
+async function fetchForecast(spot) {
+  const source = pickSource(spot);
+  if (source === "windy") {
+    const r = await fetchForecastWindy(spot);
+    if (r) return r;
+    // Notfall-Fallback: Windguru, falls Windy hart scheitert
+    return await fetchForecastWindguru(spot);
+  }
+  return await fetchForecastWindguru(spot);
+}
+
+// ── Windguru: iapi.php?q=forecast (mehrere Modelle als Fallback-Kette) ──
+async function fetchForecastWindguru(spot) {
   for (const m of MODELS) {
     const url = "https://www.windguru.cz/int/iapi.php?q=forecast&id_spot="
-      + spotId + "&id_model=" + m + "&lang=de";
+      + spot.id + "&id_model=" + m + "&lang=de";
     const req = new Request(url);
     req.headers = {
       "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
@@ -289,19 +339,70 @@ async function fetchForecast(spotId) {
     try {
       const json = await req.loadJSON();
       if (json && !json.return && json.fcst) {
-        const result = { data: json, model: m };
-        saveCache(spotId, result);
+        const result = { data: json, model: m, source: "windguru" };
+        saveCache(spot.id, result);
         return result;
       }
     } catch(e) { /* nächstes Modell */ }
   }
-  // Online fehlgeschlagen → Cache versuchen
-  return loadCache(spotId);
+  return loadCache(spot.id, "windguru");
 }
 
+// ── Windy Point Forecast API ──
+//   POST https://api.windy.com/api/point-forecast/v2
+//   { lat, lon, model, parameters: [wind, windGust], levels: [surface], key }
+//   Antwort: { ts[], wind_u-surface[], wind_v-surface[], gust-surface[], units… }
+async function fetchForecastWindy(spot) {
+  const apiKey = getWindyKey();
+  if (!apiKey) return null;
+  if (spot.lat == null || spot.lon == null) return null;
 
-// Forecast in handliche Zeitreihe umwandeln
+  const req = new Request("https://api.windy.com/api/point-forecast/v2");
+  req.method = "POST";
+  req.headers = { "Content-Type": "application/json" };
+  req.body = JSON.stringify({
+    lat: spot.lat,
+    lon: spot.lon,
+    model: WINDY_MODEL,
+    parameters: ["wind", "windGust"],
+    levels: ["surface"],
+    key: apiKey
+  });
+  req.timeoutInterval = 15;
+  try {
+    const json = await req.loadJSON();
+    if (json && Array.isArray(json.ts) && json.ts.length > 0) {
+      const result = { data: json, model: WINDY_MODEL, source: "windy" };
+      saveCache(spot.id, result);
+      return result;
+    }
+  } catch (e) { /* online failed */ }
+  return loadCache(spot.id, "windy");
+}
+
+function getWindyKey() {
+  try {
+    if (typeof Keychain !== "undefined" && Keychain.contains(WINDY_KEYCHAIN)) {
+      const k = Keychain.get(WINDY_KEYCHAIN);
+      return (k && k.length > 0) ? k : null;
+    }
+  } catch (e) { /* keychain unavailable */ }
+  return null;
+}
+
+// ── m/s + u/v-Vektor → Knoten & meteorologische Richtung (woher der Wind kommt)
+function uvToKn(u, v)  { return Math.sqrt(u*u + v*v) * MS_TO_KN; }
+function uvToDir(u, v) { return (180 + Math.atan2(u, v) * 180 / Math.PI + 360) % 360; }
+
+
+// Forecast in handliche Zeitreihe umwandeln — Dispatcher nach Quelle
 function parseSeries(result) {
+  return result.source === "windy"
+    ? parseSeriesWindy(result)
+    : parseSeriesWindguru(result);
+}
+
+function parseSeriesWindguru(result) {
   const data = result.data, fcst = data.fcst;
   const wind  = fcst.WINDSPD || [];
   const gust  = fcst.GUST    || [];
@@ -319,6 +420,27 @@ function parseSeries(result) {
       wind: wind[i] != null ? Math.round(wind[i]) : null,
       gust: gust[i] != null ? Math.round(gust[i]) : null,
       dir:  (dir[i] != null && !isNaN(dir[i])) ? dir[i] : null,
+    });
+  }
+  return series;
+}
+
+function parseSeriesWindy(result) {
+  const d = result.data;
+  const ts = d.ts || [];
+  const u  = d["wind_u-surface"] || [];
+  const v  = d["wind_v-surface"] || [];
+  const g  = d["gust-surface"]   || [];
+
+  const series = [];
+  for (let i = 0; i < ts.length; i++) {
+    const ui = u[i], vi = v[i], gi = g[i];
+    const haveUV = (ui != null && vi != null && !isNaN(ui) && !isNaN(vi));
+    series.push({
+      time: new Date(ts[i]),
+      wind: haveUV ? Math.round(uvToKn(ui, vi)) : null,
+      gust: (gi != null && !isNaN(gi)) ? Math.round(gi * MS_TO_KN) : null,
+      dir:  haveUV ? uvToDir(ui, vi) : null,
     });
   }
   return series;
@@ -695,7 +817,7 @@ function footRow(stack, p) {
 }
 
 // ─── MEDIUM: nächste 4h, stündlich ───────────────────────────────────────────
-function renderMedium(widget, spot, series, modelName, stale) {
+function renderMedium(widget, spot, series, src, modelName, stale) {
   makeBase(widget, spot, 10);
   addTitle(widget, spot, true, stale);
   widget.addSpacer(6);
@@ -732,11 +854,11 @@ function renderMedium(widget, spot, series, modelName, stale) {
   }
 
   widget.addSpacer(2);
-  foot(widget, modelName);
+  foot(widget, src, modelName);
 }
 
 // ─── LARGE: Tagesübersicht 7–18 Uhr, 2h-Raster ──────────────────────────────
-function renderLarge(widget, spot, series, modelName, stale) {
+function renderLarge(widget, spot, series, src, modelName, stale) {
   makeBase(widget, spot, 12);
   addTitle(widget, spot, true, stale);
   widget.addSpacer(4);
@@ -786,7 +908,7 @@ function renderLarge(widget, spot, series, modelName, stale) {
   }
 
   widget.addSpacer(3);
-  foot(widget, modelName);
+  foot(widget, src, modelName);
 }
 
 // Hilfs-Zelle mit fester Breite (linksbündig)
@@ -799,17 +921,33 @@ function cell(rowStack, text, width, color, font) {
   c.addSpacer();
 }
 
-function foot(widget, modelName) {
-  const f = widget.addText("windguru.cz · " + modelName + " · v" + WIDGET_VERSION);
+function foot(widget, sourceLabel, modelName) {
+  const f = widget.addText(sourceLabel + " · " + modelName + " · v" + WIDGET_VERSION);
   f.textColor = new Color("#2e4858");
   f.font = Font.systemFont(8);
   f.centerAlignText();
 }
 
+// Anzeige-Bezeichnung pro Quelle für den Footer + Tap-Ziel
+function sourceLabel(result) {
+  return result.source === "windy" ? "windy.com" : "windguru.cz";
+}
+function modelLabel(result) {
+  if (result.source === "windy") return WINDY_MODEL.toUpperCase();
+  if (result.data && result.data.wgmodel) return result.data.wgmodel.model_name;
+  return "Modell " + result.model;
+}
+function tapUrl(spot, result) {
+  if (result.source === "windy") {
+    return "https://www.windy.com/?" + spot.lat + "," + spot.lon + ",10";
+  }
+  return "https://www.windguru.cz/" + spot.id;
+}
+
 // ─── Hauptablauf ──────────────────────────────────────────────────────────────
 async function buildWidget() {
   const spot = pickSpot();
-  const result = await fetchForecast(spot.id);
+  const result = await fetchForecast(spot);
   const widget = new ListWidget();
 
   if (!result) {
@@ -819,29 +957,33 @@ async function buildWidget() {
     const e = widget.addText("⚠️ Keine Daten verfügbar");
     e.textColor = new Color("#ff8a65");
     e.font = Font.boldSystemFont(12);
+    if (pickSource(spot) === "windy" && !getWindyKey()) {
+      const k = widget.addText("Kein Windy-API-Key im Keychain.\nSetup-Script ausführen.");
+      k.textColor = new Color("#ffa726");
+      k.font = Font.systemFont(9);
+    }
     widget.refreshAfterDate = new Date(Date.now() + 10 * 60 * 1000);
     return widget;
   }
 
   const series = parseSeries(result);
-  const modelName = result.data.wgmodel ? result.data.wgmodel.model_name : ("Modell " + result.model);
+  const src    = sourceLabel(result);
+  const model  = modelLabel(result);
   const family = config.widgetFamily; // "small" | "medium" | "large" | "accessoryCircular" | undefined
-  const stale = !!result.fromCache;
+  const stale  = !!result.fromCache;
 
   if (family === "accessoryCircular") {
     renderAccessoryCircular(widget, series);
   } else if (family === "small") {
     renderSmall(widget, spot, series, stale);
   } else if (family === "large") {
-    renderLarge(widget, spot, series, modelName, stale);
+    renderLarge(widget, spot, series, src, model, stale);
   } else {
     // medium (und Fallback bei manuellem Start)
-    renderMedium(widget, spot, series, modelName, stale);
+    renderMedium(widget, spot, series, src, model, stale);
   }
 
-  // Tap aufs Widget → Windguru-Seite des Spots öffnen
-  widget.url = "https://www.windguru.cz/" + spot.id;
-
+  widget.url = tapUrl(spot, result);
   widget.refreshAfterDate = new Date(Date.now() + 60 * 60 * 1000);
   return widget;
 }
