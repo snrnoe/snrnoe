@@ -6,7 +6,7 @@ Scriptable-Widget für iPhone Homescreen und Sperrbildschirm. Zeigt Wind-Forecas
 für Kitespots in Sardinien (Windy ECMWF) und Holland (Windguru).
 Vier Größen: Small / Medium / Large + accessoryCircular.
 
-**Aktuelle Version:** 2.8.0
+**Aktuelle Version:** 2.9.0
 **Hauptdatei:** `Windguru_Widget.js` → kopieren nach Scriptable App auf dem iPhone
 
 -----
@@ -118,6 +118,11 @@ Spot-Auswahl per Widget-Parameter (`buildWidget()` reicht den Parameter an `pick
 - Längere Zahl → Windguru-Spot-ID (aus SPOTS oder ad-hoc, dann Coord-Resolver)
 - Name aus SPOTS (case-insensitive)
 - `"<id>:<Wunschname>"` → ad-hoc Spot mit eigener Bezeichnung
+- **`auto` / `nearby`** → GPS-Position, nächster bekannter Spot ≤ 25 km, sonst Ad-hoc-Spot (Name per Reverse-Geocoding)
+- **`here` / `gps`**    → immer exakte GPS-Position als Ad-hoc-Spot
+
+GPS-Position wird 10 Min in `last_location.json` gecached. Lockscreen-Widget
+fällt im Auto-Modus auf `SPOTS[0]` zurück (dort steht iOS kein GPS bereit).
 
 `lat`/`lon` steuern das Quellen-Routing in `pickSource(spot)`. Fehlen sie, holt
 `resolveCoords(spot)` sie automatisch von Windguru (mehrere Endpunkte als
@@ -158,6 +163,7 @@ Fallback + HTML-Scrape der Spot-Seite). Persistenter Cache in
 ## Versionierung
 
 ```
+2.9.0  GPS-Standort-Modus: Parameter `auto` → nächster bekannter Spot oder Ad-hoc per Reverse-Geocoding; `here`/`gps` → exakte Position; Villasimius zu SPOTS aufgenommen
 2.8.0  Coord-Auto-Resolver für Spots ohne lat/lon (Windguru-Lookup mit Endpunkt- + HTML-Fallback, persistenter Cache); Widget-Parameter akzeptiert beliebige Spot-IDs
 2.7.0  Multi-Source-Routing: Windy (ECMWF) für IT, Windguru für NL; API-Key im Keychain; SPOTS mit lat/lon
 2.6.0  Sperrbildschirm-Widget (accessoryCircular): Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig

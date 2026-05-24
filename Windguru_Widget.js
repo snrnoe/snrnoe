@@ -15,7 +15,7 @@
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.8.0";
+const WIDGET_VERSION = "2.9.0";
 const WIDGET_BUILD   = "2026-05-24";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
@@ -42,7 +42,8 @@ const WIDGET_META = JSON.stringify({
     "lockscreen-circular",
     "multi-source-routing",
     "auto-coord-resolution",
-    "arbitrary-spot-id-via-parameter"
+    "arbitrary-spot-id-via-parameter",
+    "gps-location-mode"
   ],
   windColorScale: { blue: "<9kn", green: "9-15kn", yellow: "15-25kn", red: ">25kn" },
   dayWindow: { start: 7, end: 19 },
@@ -50,6 +51,7 @@ const WIDGET_META = JSON.stringify({
 });
 
 // Changelog (Kurzform):
+//   2.9.0  GPS-Modus: Parameter "auto" → nächster bekannter Spot oder Ad-hoc per Reverse-Geocoding. "here"/"gps" → exakte Position. Villasimius zu SPOTS.
 //   2.8.0  Coord-Auto-Resolver: Spots brauchen nur noch { id, name }; lat/lon werden von Windguru geholt + gecached. Widget-Parameter akzeptiert beliebige Spot-IDs.
 //   2.7.0  Multi-Source: Windy Point Forecast API für Sardinien (ECMWF), Windguru für NL; Routing per Spot-Lat/Lon
 //   2.6.0  Sperrbildschirm-Widget (accessoryCircular): Kompass-Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
@@ -72,11 +74,12 @@ const WIDGET_META = JSON.stringify({
 //   • lat/lon (optional) sparen den ersten Netzwerk-Call und sind Override
 //   • source: "windy" | "windguru" (optional) überschreibt die Auto-Wahl
 const SPOTS = [
-  { id: 49159,   name: "La Cinta",    lat: 40.7775, lon: 9.7203 },
-  { id: 208230,  name: "Porto Pino",  lat: 38.9419, lon: 8.7806 },
-  { id: 501232,  name: "La Caletta",  lat: 40.6094, lon: 9.7547 },
-  { id: 1522,    name: "Chia",        lat: 38.8856, lon: 8.8964 },
-  { id: 278,     name: "Porto Pollo", lat: 41.1819, lon: 9.3458 },
+  { id: 49159,         name: "La Cinta",     lat: 40.7775, lon: 9.7203 },
+  { id: 208230,        name: "Porto Pino",   lat: 38.9419, lon: 8.7806 },
+  { id: 501232,        name: "La Caletta",   lat: 40.6094, lon: 9.7547 },
+  { id: 1522,          name: "Chia",         lat: 38.8856, lon: 8.8964 },
+  { id: 278,           name: "Porto Pollo",  lat: 41.1819, lon: 9.3458 },
+  { id: "villasimius", name: "Villasimius",  lat: 39.1393, lon: 9.5172 },
 ];
 
 // Quellen-Routing: aus den Spot-Koordinaten ableiten, welche API zuständig ist.
@@ -101,10 +104,18 @@ function pickSource(spot) {
 //   • BELIEBIGE Windguru-Spot-ID (auch nicht in SPOTS) — Coords werden
 //     dann beim ersten Lauf via resolveCoords() automatisch geholt
 //   • Format "<id>:<Name>" um eine ad-hoc Bezeichnung mitzugeben
+//   • "auto" / "nearby" → GPS-Standort, dann nächster bekannter Spot (≤ 25 km),
+//                         sonst Ad-hoc-Spot an deiner Position (mit Ortsnamen)
+//   • "here" / "gps"     → IMMER Ad-hoc-Spot an deiner exakten GPS-Position
 function pickSpot() {
   const param = (typeof args !== "undefined" && args.widgetParameter)
     ? String(args.widgetParameter).trim() : null;
   if (!param) return SPOTS[0];
+
+  // Standort-Modi (echte Auflösung passiert async in buildWidget)
+  const low = param.toLowerCase();
+  if (low === "auto" || low === "nearby")  return { __auto: true, mode: "nearby" };
+  if (low === "here" || low === "gps")     return { __auto: true, mode: "here" };
 
   // "<id>:<Name>" — ad-hoc Spot mit Wunschnamen
   const labeled = param.match(/^(\d{2,8})\s*[:|]\s*(.+)$/);
@@ -127,6 +138,99 @@ function pickSpot() {
   const byName = SPOTS.find(s => s.name.toLowerCase() === param.toLowerCase());
   if (byName) return byName;
   return SPOTS[0];
+}
+
+// ─── GPS-Standort-Modus ─────────────────────────────────────────────────────
+// Cached die letzte GPS-Position 10 Min, damit nicht jeder Refresh den GPS-Chip
+// weckt (Akku + Permission-Prompts).
+const LOCATION_TTL_MS = 10 * 60 * 1000;
+const LOCATION_CACHE_FILE = "last_location.json";
+const NEAREST_MAX_KM = 25; // näher dran → bekannten Spot nehmen, sonst Ad-hoc
+
+function locationCachePath() {
+  const fm = FileManager.local();
+  const dir = fm.joinPath(fm.cacheDirectory(), "windguru_cache");
+  if (!fm.fileExists(dir)) fm.createDirectory(dir, true);
+  return fm.joinPath(dir, LOCATION_CACHE_FILE);
+}
+
+async function getCurrentLocation() {
+  const fm = FileManager.local();
+  const p = locationCachePath();
+  // Frischer Cache vorhanden?
+  try {
+    if (fm.fileExists(p)) {
+      const j = JSON.parse(fm.readString(p));
+      if (j && Date.now() - j.ts < LOCATION_TTL_MS) {
+        return { latitude: j.lat, longitude: j.lon, fromCache: true };
+      }
+    }
+  } catch (e) {}
+  // GPS fragen (kann Permission-Prompt auslösen oder am Lockscreen schweigen)
+  try {
+    if (Location.setAccuracyToThreeKilometers) Location.setAccuracyToThreeKilometers();
+    const loc = await Location.current();
+    if (loc && loc.latitude != null) {
+      try { fm.writeString(p, JSON.stringify({ lat: loc.latitude, lon: loc.longitude, ts: Date.now() })); } catch (e) {}
+      return loc;
+    }
+  } catch (e) { /* permission denied / no signal / lockscreen */ }
+  // Notnagel: alten Cache verwenden
+  try {
+    if (fm.fileExists(p)) {
+      const j = JSON.parse(fm.readString(p));
+      return { latitude: j.lat, longitude: j.lon, fromCache: true, stale: true };
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function reverseGeocodeName(lat, lon) {
+  try {
+    const r = await Location.reverseGeocode(lat, lon, "de-DE");
+    if (Array.isArray(r) && r.length > 0) {
+      const a = r[0] || {};
+      return a.locality || a.subLocality || a.subAdministrativeArea || a.name || null;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+async function spotByLocation(mode) {
+  // Lockscreen-Widget: Location ist dort meist nicht verfügbar — auf SPOTS[0]
+  // zurückfallen, ohne den Refresh zu verschlucken.
+  if (typeof config !== "undefined" && config.widgetFamily === "accessoryCircular") {
+    return SPOTS[0];
+  }
+  const loc = await getCurrentLocation();
+  if (!loc) return SPOTS[0];
+  const lat = loc.latitude, lon = loc.longitude;
+
+  // "here"/"gps": IMMER exakte Position als Ad-hoc-Spot
+  if (mode === "here") {
+    const name = (await reverseGeocodeName(lat, lon)) || "Hier";
+    return { id: "here", name, lat, lon };
+  }
+
+  // "nearby"/"auto": nächsten bekannten Spot suchen, sonst Ad-hoc
+  let nearest = null, minKm = Infinity;
+  for (const s of SPOTS) {
+    if (s.lat == null || s.lon == null) continue;
+    const d = haversineKm(lat, lon, s.lat, s.lon);
+    if (d < minKm) { minKm = d; nearest = s; }
+  }
+  if (nearest && minKm <= NEAREST_MAX_KM) return nearest;
+  const name = (await reverseGeocodeName(lat, lon)) || "Hier";
+  return { id: "here", name, lat, lon };
 }
 
 const MODELS = [3, 45, 64]; // Windguru: GFS 13km → ICON 13km → Zephr-HD
@@ -1128,7 +1232,9 @@ function tapUrl(spot, result) {
 
 // ─── Hauptablauf ──────────────────────────────────────────────────────────────
 async function buildWidget() {
-  const spot = await resolveCoords(pickSpot());
+  let spot = pickSpot();
+  if (spot && spot.__auto) spot = await spotByLocation(spot.mode);
+  spot = await resolveCoords(spot);
   const result = await fetchForecast(spot);
   const widget = new ListWidget();
 
