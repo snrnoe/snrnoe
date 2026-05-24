@@ -50,7 +50,9 @@ Zeitreihe `[{ time, wind (kn), gust (kn), dir (° meteorologisch) }, …]`.
 #### Windy API (Sardinien-Default)
 
 - Endpunkt: `POST https://api.windy.com/api/point-forecast/v2`
-- Modell: `ecmwf` (alternativ `gfs`, `iconEu`, `arome` via `WINDY_MODEL`)
+- Modell: `gfs` (Free-Tier-kompatibel). Premium-Keys können auf `ecmwf`,
+  `iconEu`, `arome` umstellen via `WINDY_MODEL` — ECMWF ist für Mittelmeer
+  deutlich präziser, aber **Free-Tier returnt HTTP 400 für ECMWF**.
 - Parameter: `wind`, `windGust`, Level `surface`
 - Antwort: `ts[]`, `wind_u-surface[]`, `wind_v-surface[]`, `gust-surface[]` in m/s
 - Umrechnung: `wind = √(u²+v²) · 1.9438`, `dir = (180 + atan2(u,v)·180/π) mod 360`

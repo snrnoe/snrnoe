@@ -15,7 +15,7 @@
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.9.1";
+const WIDGET_VERSION = "2.9.2";
 const WIDGET_BUILD   = "2026-05-24";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
@@ -51,6 +51,7 @@ const WIDGET_META = JSON.stringify({
 });
 
 // Changelog (Kurzform):
+//   2.9.2  Default-Windy-Model auf "gfs" (Free-Tier-kompatibel; ECMWF nur Premium). HTTP-Status in Diagnose.
 //   2.9.1  Diagnose: Error-State zeigt die konkrete Fehlermeldung pro Quelle (Key-Status, errorMsg, Request-Fehler)
 //   2.9.0  GPS-Modus: Parameter "auto" → nächster bekannter Spot oder Ad-hoc per Reverse-Geocoding. "here"/"gps" → exakte Position. Villasimius zu SPOTS.
 //   2.8.0  Coord-Auto-Resolver: Spots brauchen nur noch { id, name }; lat/lon werden von Windguru geholt + gecached. Widget-Parameter akzeptiert beliebige Spot-IDs.
@@ -235,7 +236,10 @@ async function spotByLocation(mode) {
 }
 
 const MODELS = [3, 45, 64]; // Windguru: GFS 13km → ICON 13km → Zephr-HD
-const WINDY_MODEL = "ecmwf"; // Windy-Modell (alternativ: "gfs", "iconEu", "arome")
+// Windy-Modell. ACHTUNG: Free-Tier-Keys können NUR "gfs" abrufen.
+// Premium-Tier kann zusätzlich "ecmwf", "iconEu", "arome" — bei bezahltem Plan
+// hier auf "ecmwf" umstellen für deutlich bessere Vorhersagen im Mittelmeer.
+const WINDY_MODEL = "gfs";
 const WINDY_KEYCHAIN = "WINDY_API_KEY"; // Keychain-Schlüssel; per Setup-Script gefüllt
 const MS_TO_KN = 1.9438;
 const HOUR_START = 7;       // Tagesfenster Beginn (7–19 Uhr)
@@ -667,17 +671,21 @@ async function fetchForecastWindy(spot) {
     key: apiKey
   });
   req.timeoutInterval = 15;
+  // loadString statt loadJSON: behält Response auch bei 4xx/5xx und gibt uns
+  // sowohl Body als auch req.response.statusCode für eine präzise Diagnose.
   try {
-    const json = await req.loadJSON();
-    if (json && Array.isArray(json.ts) && json.ts.length > 0) {
+    const text = await req.loadString();
+    const status = (req.response && req.response.statusCode) || -1;
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) { /* nicht-JSON body */ }
+    if (status >= 200 && status < 300 && json && Array.isArray(json.ts) && json.ts.length > 0) {
       const result = { data: json, model: WINDY_MODEL, source: "windy" };
       saveCache(spot.id, result);
       return result;
     }
-    // Windy hat geantwortet, aber kein verwertbares Feld → errorMsg melden
-    const msg = json && (json.errorMsg || json.error || json.message || JSON.stringify(json).slice(0, 120))
-              || "Antwort ohne ts[]";
-    DIAG.windy = String(msg).slice(0, 140);
+    const detail = (json && (json.message || json.errorMsg || json.error))
+                || (text ? text.slice(0, 120) : "leere Antwort");
+    DIAG.windy = "HTTP " + status + " (" + WINDY_MODEL + "): " + String(detail).slice(0, 140);
   } catch (e) {
     DIAG.windy = "Request: " + (e && e.message ? e.message : String(e)).slice(0, 140);
   }
