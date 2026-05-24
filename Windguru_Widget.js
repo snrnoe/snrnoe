@@ -15,7 +15,7 @@
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.9.0";
+const WIDGET_VERSION = "2.9.1";
 const WIDGET_BUILD   = "2026-05-24";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
@@ -51,6 +51,7 @@ const WIDGET_META = JSON.stringify({
 });
 
 // Changelog (Kurzform):
+//   2.9.1  Diagnose: Error-State zeigt die konkrete Fehlermeldung pro Quelle (Key-Status, errorMsg, Request-Fehler)
 //   2.9.0  GPS-Modus: Parameter "auto" → nächster bekannter Spot oder Ad-hoc per Reverse-Geocoding. "here"/"gps" → exakte Position. Villasimius zu SPOTS.
 //   2.8.0  Coord-Auto-Resolver: Spots brauchen nur noch { id, name }; lat/lon werden von Windguru geholt + gecached. Widget-Parameter akzeptiert beliebige Spot-IDs.
 //   2.7.0  Multi-Source: Windy Point Forecast API für Sardinien (ECMWF), Windguru für NL; Routing per Spot-Lat/Lon
@@ -597,9 +598,14 @@ function loadCache(spotId, source) {
   } catch(e) { return null; }
 }
 
+// ── Diagnose: letzter Fehler pro Quelle, damit der Error-State im Widget
+// genau sagt, woran es scheitert (key fehlt? falscher key? netzwerk? format?).
+const DIAG = { windy: null, windguru: null };
+
 // Dispatcher: wählt die richtige API und übergibt einheitliches Result-Shape
 //   { data, model, source, fromCache?, savedAt? }
 async function fetchForecast(spot) {
+  DIAG.windy = null; DIAG.windguru = null;
   const source = pickSource(spot);
   if (source === "windy") {
     const r = await fetchForecastWindy(spot);
@@ -612,6 +618,7 @@ async function fetchForecast(spot) {
 
 // ── Windguru: iapi.php?q=forecast (mehrere Modelle als Fallback-Kette) ──
 async function fetchForecastWindguru(spot) {
+  let lastErr = null;
   for (const m of MODELS) {
     const url = "https://www.windguru.cz/int/iapi.php?q=forecast&id_spot="
       + spot.id + "&id_model=" + m + "&lang=de";
@@ -629,8 +636,13 @@ async function fetchForecastWindguru(spot) {
         saveCache(spot.id, result);
         return result;
       }
-    } catch(e) { /* nächstes Modell */ }
+      lastErr = "Modell " + m + ": " +
+        (json && (json.return || json.error || json.errorMsg) || "leere Antwort");
+    } catch(e) {
+      lastErr = "Modell " + m + ": " + (e && e.message ? e.message : String(e));
+    }
   }
+  DIAG.windguru = lastErr || "alle Modelle fehlgeschlagen";
   return loadCache(spot.id, "windguru");
 }
 
@@ -640,8 +652,8 @@ async function fetchForecastWindguru(spot) {
 //   Antwort: { ts[], wind_u-surface[], wind_v-surface[], gust-surface[], units… }
 async function fetchForecastWindy(spot) {
   const apiKey = getWindyKey();
-  if (!apiKey) return null;
-  if (spot.lat == null || spot.lon == null) return null;
+  if (!apiKey) { DIAG.windy = "Kein API-Key im Keychain"; return null; }
+  if (spot.lat == null || spot.lon == null) { DIAG.windy = "Keine Koordinaten"; return null; }
 
   const req = new Request("https://api.windy.com/api/point-forecast/v2");
   req.method = "POST";
@@ -662,7 +674,13 @@ async function fetchForecastWindy(spot) {
       saveCache(spot.id, result);
       return result;
     }
-  } catch (e) { /* online failed */ }
+    // Windy hat geantwortet, aber kein verwertbares Feld → errorMsg melden
+    const msg = json && (json.errorMsg || json.error || json.message || JSON.stringify(json).slice(0, 120))
+              || "Antwort ohne ts[]";
+    DIAG.windy = String(msg).slice(0, 140);
+  } catch (e) {
+    DIAG.windy = "Request: " + (e && e.message ? e.message : String(e)).slice(0, 140);
+  }
   return loadCache(spot.id, "windy");
 }
 
@@ -1239,16 +1257,28 @@ async function buildWidget() {
   const widget = new ListWidget();
 
   if (!result) {
-    makeBase(widget, spot, 12);
+    makeBase(widget, spot, 10);
     addTitle(widget, spot, true);
-    widget.addSpacer(8);
-    const e = widget.addText("⚠️ Keine Daten verfügbar");
+    widget.addSpacer(6);
+    const e = widget.addText("⚠️ Keine Daten");
     e.textColor = new Color("#ff8a65");
-    e.font = Font.boldSystemFont(12);
-    if (pickSource(spot) === "windy" && !getWindyKey()) {
-      const k = widget.addText("Kein Windy-API-Key im Keychain.\nSetup-Script ausführen.");
-      k.textColor = new Color("#ffa726");
-      k.font = Font.systemFont(9);
+    e.font = Font.boldSystemFont(13);
+    widget.addSpacer(3);
+    const src = widget.addText("Quelle: " + pickSource(spot));
+    src.textColor = new Color("#cfd8dc");
+    src.font = Font.systemFont(9);
+    // Diagnose-Zeilen — wichtig zum Debuggen warum nichts da ist
+    if (DIAG.windy) {
+      const t = widget.addText("Windy: " + DIAG.windy);
+      t.textColor = new Color("#ffa726");
+      t.font = Font.systemFont(8);
+      t.lineLimit = 3; t.minimumScaleFactor = 0.7;
+    }
+    if (DIAG.windguru) {
+      const t = widget.addText("Windguru: " + DIAG.windguru);
+      t.textColor = new Color("#ffa726");
+      t.font = Font.systemFont(8);
+      t.lineLimit = 3; t.minimumScaleFactor = 0.7;
     }
     widget.refreshAfterDate = new Date(Date.now() + 10 * 60 * 1000);
     return widget;
