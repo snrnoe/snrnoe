@@ -6,7 +6,7 @@ Scriptable-Widget für iPhone Homescreen und Sperrbildschirm. Zeigt Wind-Forecas
 für Kitespots in Sardinien (Windy ECMWF) und Holland (Windguru).
 Vier Größen: Small / Medium / Large + accessoryCircular.
 
-**Aktuelle Version:** 2.7.0
+**Aktuelle Version:** 2.8.0
 **Hauptdatei:** `Windguru_Widget.js` → kopieren nach Scriptable App auf dem iPhone
 
 -----
@@ -17,6 +17,7 @@ Vier Größen: Small / Medium / Large + accessoryCircular.
 Windguru_Widget.js
 ├── KONFIGURATION              Spots, Modelle, Tagesfenster (7–19), Lock-Fenster (9–17)
 ├── HILFSFUNKTIONEN            windColor, kiteStatus, dirLabel, ...
+├── resolveCoords()            Coord-Auto-Resolver für Spots ohne lat/lon (Windguru-Lookup + Cache)
 ├── drawCompass()              Windrose-Kompass via DrawContext (Homescreen)
 ├── drawLockCircle()           Sperrbildschirm-Ring + Punkt + Peak-Zahl
 ├── makeGlowBase()             Apple-Style Hintergrund (Glow-Effekt)
@@ -107,12 +108,22 @@ const SPOTS = [
   { id: 501232, name: "La Caletta",  lat: 40.6094, lon: 9.7547 },
   { id: 1522,   name: "Chia",        lat: 38.8856, lon: 8.8964 },
   { id: 278,    name: "Porto Pollo", lat: 41.1819, lon: 9.3458 },
+  // Minimum reicht: lat/lon werden beim ersten Lauf auto-resolved + gecached
+  // { id: 4711, name: "Zandvoort" },
 ];
 ```
 
-Spot per Widget-Parameter wählen: Index (0–4), Name oder ID.
-`lat`/`lon` werden von der Windy-API gebraucht und steuern das Quellen-Routing
-in `pickSource(spot)`. Optional erzwingbar via `source: "windy" | "windguru"`.
+Spot-Auswahl per Widget-Parameter (`buildWidget()` reicht den Parameter an `pickSpot()`):
+- Kleine Zahl ≤ 2-stellig im SPOTS-Range → Index (0..N-1)
+- Längere Zahl → Windguru-Spot-ID (aus SPOTS oder ad-hoc, dann Coord-Resolver)
+- Name aus SPOTS (case-insensitive)
+- `"<id>:<Wunschname>"` → ad-hoc Spot mit eigener Bezeichnung
+
+`lat`/`lon` steuern das Quellen-Routing in `pickSource(spot)`. Fehlen sie, holt
+`resolveCoords(spot)` sie automatisch von Windguru (mehrere Endpunkte als
+Fallback + HTML-Scrape der Spot-Seite). Persistenter Cache in
+`cacheDirectory()/windguru_cache/spot_coords.json`. Optional erzwingbar via
+`source: "windy" | "windguru"`.
 
 -----
 
@@ -147,6 +158,7 @@ in `pickSource(spot)`. Optional erzwingbar via `source: "windy" | "windguru"`.
 ## Versionierung
 
 ```
+2.8.0  Coord-Auto-Resolver für Spots ohne lat/lon (Windguru-Lookup mit Endpunkt- + HTML-Fallback, persistenter Cache); Widget-Parameter akzeptiert beliebige Spot-IDs
 2.7.0  Multi-Source-Routing: Windy (ECMWF) für IT, Windguru für NL; API-Key im Keychain; SPOTS mit lat/lon
 2.6.0  Sperrbildschirm-Widget (accessoryCircular): Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
 2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)

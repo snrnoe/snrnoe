@@ -15,7 +15,7 @@
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.7.0";
+const WIDGET_VERSION = "2.8.0";
 const WIDGET_BUILD   = "2026-05-24";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
@@ -40,7 +40,9 @@ const WIDGET_META = JSON.stringify({
     "tap-to-open",
     "stale-indicator",
     "lockscreen-circular",
-    "multi-source-routing"
+    "multi-source-routing",
+    "auto-coord-resolution",
+    "arbitrary-spot-id-via-parameter"
   ],
   windColorScale: { blue: "<9kn", green: "9-15kn", yellow: "15-25kn", red: ">25kn" },
   dayWindow: { start: 7, end: 19 },
@@ -48,6 +50,7 @@ const WIDGET_META = JSON.stringify({
 });
 
 // Changelog (Kurzform):
+//   2.8.0  Coord-Auto-Resolver: Spots brauchen nur noch { id, name }; lat/lon werden von Windguru geholt + gecached. Widget-Parameter akzeptiert beliebige Spot-IDs.
 //   2.7.0  Multi-Source: Windy Point Forecast API für Sardinien (ECMWF), Windguru für NL; Routing per Spot-Lat/Lon
 //   2.6.0  Sperrbildschirm-Widget (accessoryCircular): Kompass-Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
 //   2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)
@@ -63,10 +66,11 @@ const WIDGET_META = JSON.stringify({
 
 
 // ─── DEINE SPOTS ────────────────────────────────────────────────────────────
-// Neue Spots ergänzen: { id: <Windguru-Spot-ID>, name: "<Anzeigename>", lat, lon }
+// Spots brauchen mindestens { id, name }. lat/lon sind optional — fehlen sie,
+// holt sie der Coord-Resolver beim ersten Lauf von Windguru und cached sie.
 //   • Spot-ID steht in der windguru.cz-URL, z.B. windguru.cz/49159
-//   • lat/lon werden für die Windy-API gebraucht (und fürs Quellen-Routing)
-//   • Optional: source: "windy" | "windguru" überschreibt die Auto-Wahl
+//   • lat/lon (optional) sparen den ersten Netzwerk-Call und sind Override
+//   • source: "windy" | "windguru" (optional) überschreibt die Auto-Wahl
 const SPOTS = [
   { id: 49159,   name: "La Cinta",    lat: 40.7775, lon: 9.7203 },
   { id: 208230,  name: "Porto Pino",  lat: 38.9419, lon: 8.7806 },
@@ -90,18 +94,38 @@ function pickSource(spot) {
   return "windguru";
 }
 
-// Spot-Auswahl per Widget-Parameter (Index 0..4, Name oder ID). Standard = erster.
+// Spot-Auswahl per Widget-Parameter. Akzeptiert:
+//   • Index 0..N-1 (kleine Zahl im SPOTS-Bereich)
+//   • Name aus SPOTS (Groß-/Kleinschreibung egal)
+//   • Bekannte Windguru-Spot-ID aus SPOTS
+//   • BELIEBIGE Windguru-Spot-ID (auch nicht in SPOTS) — Coords werden
+//     dann beim ersten Lauf via resolveCoords() automatisch geholt
+//   • Format "<id>:<Name>" um eine ad-hoc Bezeichnung mitzugeben
 function pickSpot() {
   const param = (typeof args !== "undefined" && args.widgetParameter)
     ? String(args.widgetParameter).trim() : null;
-  if (param) {
-    const asNum = parseInt(param, 10);
-    if (!isNaN(asNum) && asNum >= 0 && asNum < SPOTS.length) return SPOTS[asNum];
-    const byName = SPOTS.find(s => s.name.toLowerCase() === param.toLowerCase());
-    if (byName) return byName;
-    const byId = SPOTS.find(s => String(s.id) === param);
-    if (byId) return byId;
+  if (!param) return SPOTS[0];
+
+  // "<id>:<Name>" — ad-hoc Spot mit Wunschnamen
+  const labeled = param.match(/^(\d{2,8})\s*[:|]\s*(.+)$/);
+  if (labeled) {
+    const id = parseInt(labeled[1], 10);
+    const known = SPOTS.find(s => s.id === id);
+    return known ? { ...known, name: labeled[2].trim() } : { id, name: labeled[2].trim() };
   }
+
+  // Reine Index-Zahl (< SPOTS.length) → in SPOTS picken
+  const asNum = parseInt(param, 10);
+  if (!isNaN(asNum) && /^\d+$/.test(param)) {
+    if (asNum >= 0 && asNum < SPOTS.length && param.length <= 2) return SPOTS[asNum];
+    // Größere Zahl = Windguru-Spot-ID; aus SPOTS oder ad-hoc
+    const byId = SPOTS.find(s => s.id === asNum);
+    if (byId) return byId;
+    return { id: asNum, name: "Spot " + asNum };
+  }
+
+  const byName = SPOTS.find(s => s.name.toLowerCase() === param.toLowerCase());
+  if (byName) return byName;
   return SPOTS[0];
 }
 
@@ -275,6 +299,164 @@ function drawCompass(deg, size, accentColor) {
   dc.addPath(dot); dc.strokePath();
 
   return dc.getImage();
+}
+
+// ─── Spot-Koordinaten auto-resolven ──────────────────────────────────────────
+// Ein Spot braucht nur { id, name } — lat/lon werden beim ersten Lauf von
+// Windguru geholt (mehrere Endpunkte als Fallback) und persistent gecached.
+// Hardcoded lat/lon in SPOTS hat Vorrang (zero-network, instant).
+
+const COORDS_CACHE_FILE = "spot_coords.json";
+
+function coordsCachePath() {
+  const fm = FileManager.local();
+  const dir = fm.joinPath(fm.cacheDirectory(), "windguru_cache");
+  if (!fm.fileExists(dir)) fm.createDirectory(dir, true);
+  return fm.joinPath(dir, COORDS_CACHE_FILE);
+}
+
+function loadCoordsCache() {
+  try {
+    const fm = FileManager.local();
+    const p = coordsCachePath();
+    if (!fm.fileExists(p)) return {};
+    return JSON.parse(fm.readString(p)) || {};
+  } catch (e) { return {}; }
+}
+
+function saveCoordsCache(cache) {
+  try {
+    FileManager.local().writeString(coordsCachePath(), JSON.stringify(cache));
+  } catch (e) { /* optional */ }
+}
+
+// Reicht in einem unbekannten JSON-Objekt nach (lat, lon) — versucht alle
+// üblichen Schlüssel-Schreibweisen und prüft Plausibilität.
+function extractLatLon(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const latKeys = ["lat", "latitude", "geo_lat", "gp_lat", "spot_lat"];
+  const lonKeys = ["lon", "lng", "long", "longitude", "geo_lon", "gp_lon", "spot_lon"];
+  let lat = null, lon = null;
+  for (const k of latKeys) if (obj[k] != null) { lat = parseFloat(obj[k]); break; }
+  for (const k of lonKeys) if (obj[k] != null) { lon = parseFloat(obj[k]); break; }
+  if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  if (lat === 0 && lon === 0) return null;
+  return { lat, lon };
+}
+
+// Sucht in beliebigen API-Antworten nach den Coords eines bestimmten Spots.
+function findLatLonInResponse(json, spotId) {
+  if (!json) return null;
+  const sid = String(spotId);
+  // Direkt auf Top-Level
+  let v = extractLatLon(json);
+  if (v) return v;
+  // Object, gekeyt nach spot.id
+  if (json[sid]) {
+    v = extractLatLon(json[sid]);
+    if (v) return v;
+  }
+  // Container-Felder mit Array/Objekt von Spots
+  for (const key of ["spots", "data", "result", "items", "list"]) {
+    const inner = json[key];
+    if (!inner) continue;
+    if (Array.isArray(inner)) {
+      const match = inner.find(s => Number(s.id_spot ?? s.id ?? s.spot_id) === Number(spotId));
+      if (match) { v = extractLatLon(match); if (v) return v; }
+    } else if (typeof inner === "object") {
+      if (inner[sid]) { v = extractLatLon(inner[sid]); if (v) return v; }
+    }
+  }
+  // Spot-Info-Feld direkt im Forecast-Response
+  if (json.spot)    { v = extractLatLon(json.spot);    if (v) return v; }
+  if (json.station) { v = extractLatLon(json.station); if (v) return v; }
+  return null;
+}
+
+// Sucht Coords im HTML der Spot-Seite (JSON-LD oder Inline-Variablen).
+function findLatLonInHtml(html, spotId) {
+  if (!html || typeof html !== "string") return null;
+  // JSON-LD: "latitude": 40.77, "longitude": 9.72
+  const ld = html.match(/"latitude"\s*:\s*(-?\d+\.\d+)[^}]*?"longitude"\s*:\s*(-?\d+\.\d+)/);
+  if (ld) {
+    const lat = parseFloat(ld[1]), lon = parseFloat(ld[2]);
+    if (!isNaN(lat) && !isNaN(lon)) return { lat, lon };
+  }
+  // Inline Windguru-Vars: spot_lat = 40.77; spot_lon = 9.72;
+  const sl = html.match(/spot_lat\s*[:=]\s*(-?\d+\.\d+)[^]*?spot_lon\s*[:=]\s*(-?\d+\.\d+)/);
+  if (sl) {
+    const lat = parseFloat(sl[1]), lon = parseFloat(sl[2]);
+    if (!isNaN(lat) && !isNaN(lon)) return { lat, lon };
+  }
+  // Generisches "lat":40.77,"lon":9.72 in der Nähe der spotId
+  const idx = html.indexOf(String(spotId));
+  if (idx >= 0) {
+    const slice = html.substring(Math.max(0, idx - 200), idx + 1000);
+    const m = slice.match(/"lat"\s*:\s*(-?\d+\.\d+)[^}]*?"lon"\s*:\s*(-?\d+\.\d+)/);
+    if (m) {
+      const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+      if (!isNaN(lat) && !isNaN(lon)) return { lat, lon };
+    }
+  }
+  return null;
+}
+
+const WG_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+  "Referer": "https://www.windguru.cz/",
+  "Accept": "*/*"
+};
+
+// Probiert mehrere Windguru-Endpunkte + HTML-Scrape. Erstes Treffer-Coord wins.
+async function lookupCoordsFromWindguru(spotId) {
+  const jsonEndpoints = [
+    "https://www.windguru.cz/int/iapi.php?q=forecast_spots&id_spots=" + spotId,
+    "https://www.windguru.cz/int/iapi.php?q=spot&id_spot=" + spotId,
+    "https://www.windguru.cz/int/iapi.php?q=spot_info&id_spot=" + spotId,
+    // Reuse der bekannten Forecast-Antwort — manche Versionen liefern hier spot.
+    "https://www.windguru.cz/int/iapi.php?q=forecast&id_spot=" + spotId + "&id_model=3"
+  ];
+  for (const url of jsonEndpoints) {
+    try {
+      const req = new Request(url);
+      req.headers = WG_HEADERS;
+      req.timeoutInterval = 12;
+      const json = await req.loadJSON();
+      const hit = findLatLonInResponse(json, spotId);
+      if (hit) return { ...hit, via: "iapi" };
+    } catch (e) { /* nächster Endpunkt */ }
+  }
+  // HTML-Fallback
+  try {
+    const req = new Request("https://www.windguru.cz/" + spotId);
+    req.headers = WG_HEADERS;
+    req.timeoutInterval = 12;
+    const html = await req.loadString();
+    const hit = findLatLonInHtml(html, spotId);
+    if (hit) return { ...hit, via: "html" };
+  } catch (e) { /* hard fail */ }
+  return null;
+}
+
+// Hauptfunktion: enriched einen Spot mit lat/lon, sofern fehlend.
+async function resolveCoords(spot) {
+  if (spot.lat != null && spot.lon != null) return spot;
+  const cache = loadCoordsCache();
+  const sid = String(spot.id);
+  if (cache[sid] && cache[sid].lat != null && cache[sid].lon != null) {
+    return { ...spot, lat: cache[sid].lat, lon: cache[sid].lon };
+  }
+  const hit = await lookupCoordsFromWindguru(spot.id);
+  if (hit) {
+    cache[sid] = {
+      lat: hit.lat, lon: hit.lon, via: hit.via,
+      name: spot.name, resolvedAt: Date.now()
+    };
+    saveCoordsCache(cache);
+    return { ...spot, lat: hit.lat, lon: hit.lon };
+  }
+  return spot; // unauflösbar → pickSource() fällt auf Windguru-Default zurück
 }
 
 // ─── Daten laden (Offline-Cache pro Spot + Quelle) ──────────────────────────
@@ -946,7 +1128,7 @@ function tapUrl(spot, result) {
 
 // ─── Hauptablauf ──────────────────────────────────────────────────────────────
 async function buildWidget() {
-  const spot = pickSpot();
+  const spot = await resolveCoords(pickSpot());
   const result = await fetchForecast(spot);
   const widget = new ListWidget();
 
