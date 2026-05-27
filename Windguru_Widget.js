@@ -15,7 +15,7 @@
 
 // ─── VERSIONIERUNG ──────────────────────────────────────────────────────────
 // Semantic Versioning: MAJOR.MINOR.PATCH
-const WIDGET_VERSION = "2.9.2";
+const WIDGET_VERSION = "2.9.3";
 const WIDGET_BUILD   = "2026-05-24";
 
 // Maschinenlesbare Metadaten (für automatische Auswertung der Frontend-Lösung).
@@ -727,10 +727,12 @@ function parseSeriesWindguru(result) {
 
   const series = [];
   for (let i = 0; i < hours.length; i++) {
+    const w = wind[i] != null ? Math.round(wind[i]) : null;
+    const g = gust[i] != null ? Math.round(gust[i]) : null;
     series.push({
       time: new Date(initDate.getTime() + hours[i] * 3600 * 1000),
-      wind: wind[i] != null ? Math.round(wind[i]) : null,
-      gust: gust[i] != null ? Math.round(gust[i]) : null,
+      wind: w,
+      gust: (g != null && w != null) ? Math.max(g, w) : (g ?? w),
       dir:  (dir[i] != null && !isNaN(dir[i])) ? dir[i] : null,
     });
   }
@@ -748,10 +750,17 @@ function parseSeriesWindy(result) {
   for (let i = 0; i < ts.length; i++) {
     const ui = u[i], vi = v[i], gi = g[i];
     const haveUV = (ui != null && vi != null && !isNaN(ui) && !isNaN(vi));
+    const windKn = haveUV ? Math.round(uvToKn(ui, vi)) : null;
+    const rawGust = (gi != null && !isNaN(gi)) ? Math.round(gi * MS_TO_KN) : null;
+    // Physikalische Invariante: Böen ≥ Wind. GFS-Daten über Windy liefern
+    // gelegentlich zu niedrige gust-surface-Werte.
+    const gustKn = (rawGust != null && windKn != null)
+      ? Math.max(rawGust, windKn)
+      : (rawGust ?? windKn);
     series.push({
       time: new Date(ts[i]),
-      wind: haveUV ? Math.round(uvToKn(ui, vi)) : null,
-      gust: (gi != null && !isNaN(gi)) ? Math.round(gi * MS_TO_KN) : null,
+      wind: windKn,
+      gust: gustKn,
       dir:  haveUV ? uvToDir(ui, vi) : null,
     });
   }
