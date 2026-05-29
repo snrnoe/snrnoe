@@ -1,0 +1,223 @@
+# Windguru Kite Widget — Claude Code Projektgedächtnis
+
+## Projektübersicht
+
+Scriptable-Widget für iPhone Homescreen und Sperrbildschirm. Zeigt Wind-Forecast
+für Kitespots in Sardinien (Windy ECMWF) und Holland (Windguru).
+Vier Größen: Small / Medium / Large + accessoryCircular.
+
+**Aktuelle Version:** 2.9.0
+**Hauptdatei:** `Windguru_Widget.js` → kopieren nach Scriptable App auf dem iPhone
+
+-----
+
+## Architektur
+
+```
+Windguru_Widget.js
+├── KONFIGURATION              Spots, Modelle, Tagesfenster (7–19), Lock-Fenster (9–17)
+├── HILFSFUNKTIONEN            windColor, kiteStatus, dirLabel, ...
+├── resolveCoords()            Coord-Auto-Resolver für Spots ohne lat/lon (Windguru-Lookup + Cache)
+├── drawCompass()              Windrose-Kompass via DrawContext (Homescreen)
+├── drawLockCircle()           Sperrbildschirm-Ring + Punkt + Peak-Zahl
+├── makeGlowBase()             Apple-Style Hintergrund (Glow-Effekt)
+├── bestKiteWindow()           Algorithmus: bestes Kitefenster des Tages
+├── dayPeakInRange()           Tages-Peak (Wind) im beliebigen Stundenfenster
+├── renderSmall()              Small-Widget Layout
+├── renderMedium()             Medium-Widget Layout
+├── renderLarge()              Large-Widget Layout
+├── renderAccessoryCircular()  Sperrbildschirm-Widget (Lockscreen)
+└── buildWidget()              Haupt-Entry-Point
+```
+
+-----
+
+## Technische Entscheidungen
+
+### Datenquellen (Multi-Source-Routing, seit 2.7.0)
+
+Pro Spot wird aus Lat/Lon abgeleitet, welche API zuständig ist
+(`pickSource(spot)`, optional per `spot.source` überschreibbar):
+
+- **Italien (Bounding-Box inkl. Sardinien)** → Windy
+- **Niederlande**                            → Windguru
+- **sonst**                                  → Windguru (Default)
+
+Ergebnis-Shape ist quellen-agnostisch: `{ data, model, source, fromCache?, savedAt? }`.
+`parseSeries(result)` dispatcht nach `result.source` und liefert immer dieselbe
+Zeitreihe `[{ time, wind (kn), gust (kn), dir (° meteorologisch) }, …]`.
+
+#### Windy API (Sardinien-Default)
+
+- Endpunkt: `POST https://api.windy.com/api/point-forecast/v2`
+- Modell: `gfs` (Free-Tier-kompatibel). Premium-Keys können auf `ecmwf`,
+  `iconEu`, `arome` umstellen via `WINDY_MODEL` — ECMWF ist für Mittelmeer
+  deutlich präziser, aber **Free-Tier returnt HTTP 400 für ECMWF**.
+- Parameter: `wind`, `windGust`, Level `surface`
+- Antwort: `ts[]`, `wind_u-surface[]`, `wind_v-surface[]`, `gust-surface[]` in m/s
+- Umrechnung: `wind = √(u²+v²) · 1.9438`, `dir = (180 + atan2(u,v)·180/π) mod 360`
+- **API-Key** liegt im iOS-Keychain unter `WINDY_API_KEY`
+  (einmaliges Setup-Script `Keychain.set("WINDY_API_KEY", "…")`).
+  Key **nie** ins Repo committen.
+- Free-Tier: 500 Requests/Tag (5 Spots × ~24 Refreshes ≈ 120/d → reicht locker)
+- Fallback bei Windy-Fehler: automatischer Notfall-Versuch über Windguru
+- Fallback bei Netzfehler: lokaler Cache
+
+#### Windguru iapi.php (Holland-Default + Notfall-Fallback)
+
+- Endpunkt: `https://www.windguru.cz/int/iapi.php?q=forecast&id_spot=<ID>&id_model=<M>`
+- Modell-Fallback: GFS 13km (3) → ICON 13km (45) → Zephr-HD (64)
+- Windfeld: `WINDSPD` (kn), Böen: `GUST` (kn), Richtung: `WINDDIR` (°)
+- Login nicht nötig; User-Agent + Referer-Header erforderlich
+
+### Offline-Cache
+
+- `FileManager.local()` → `cacheDirectory()/windguru_cache/spot_<ID>_<source>.json`
+  (getrennt pro Quelle, damit Windy- und Windguru-Antworten nicht kollidieren)
+- Bei Netzfehler: letzter Cache wird geladen, ⚠︎ im Header angezeigt
+
+### Windfarben (unveränderlich, nach Wind — nie Böen)
+
+|Bereich |Farbe|Hex    |
+|--------|-----|-------|
+|< 9 kn  |Blau |#4fa3ff|
+|9–15 kn |Grün |#00e676|
+|15–25 kn|Gelb |#ffd400|
+|> 25 kn |Rot  |#ef5350|
+
+### Kitefenster-Algorithmus (`bestKiteWindow`)
+
+- Kriterien: Wind ≥ 10 kn **UND** Böen ≤ 30 kn, heute, 7–19 Uhr
+- Gruppenbildung: zusammenhängende Stunden (max. 2h Lücke)
+- Scoring: niedrigste Böen-Spreizung gewinnt, Länge als Tiebreaker
+
+### Kompass (`drawCompass`)
+
+- Ring: immer `#4fa3ff` (Blau, fix — kein Windfarben-Wechsel)
+- Nadel: immer `#ef5350` (Rot), sitzt auf dem Außenring, rotiert dort
+- Windrose: 8 Zacken (N/O/S/W hell, Diagonalen grau)
+- Labels: nur N / O / S / W
+- Nordmarkierung: türkises Dreieck außen oben
+
+-----
+
+## Spots
+
+```js
+const SPOTS = [
+  { id: 49159,  name: "La Cinta",    lat: 40.7775, lon: 9.7203 },
+  { id: 208230, name: "Porto Pino",  lat: 38.9419, lon: 8.7806 },
+  { id: 501232, name: "La Caletta",  lat: 40.6094, lon: 9.7547 },
+  { id: 1522,   name: "Chia",        lat: 38.8856, lon: 8.8964 },
+  { id: 278,    name: "Porto Pollo", lat: 41.1819, lon: 9.3458 },
+  // Minimum reicht: lat/lon werden beim ersten Lauf auto-resolved + gecached
+  // { id: 4711, name: "Zandvoort" },
+];
+```
+
+Spot-Auswahl per Widget-Parameter (`buildWidget()` reicht den Parameter an `pickSpot()`):
+- Kleine Zahl ≤ 2-stellig im SPOTS-Range → Index (0..N-1)
+- Längere Zahl → Windguru-Spot-ID (aus SPOTS oder ad-hoc, dann Coord-Resolver)
+- Name aus SPOTS (case-insensitive)
+- `"<id>:<Wunschname>"` → ad-hoc Spot mit eigener Bezeichnung
+- **`auto` / `nearby`** → GPS-Position, nächster bekannter Spot ≤ 25 km, sonst Ad-hoc-Spot (Name per Reverse-Geocoding)
+- **`here` / `gps`**    → immer exakte GPS-Position als Ad-hoc-Spot
+
+GPS-Position wird 10 Min in `last_location.json` gecached. Lockscreen-Widget
+fällt im Auto-Modus auf `SPOTS[0]` zurück (dort steht iOS kein GPS bereit).
+
+`lat`/`lon` steuern das Quellen-Routing in `pickSource(spot)`. Fehlen sie, holt
+`resolveCoords(spot)` sie automatisch von Windguru (mehrere Endpunkte als
+Fallback + HTML-Scrape der Spot-Seite). Persistenter Cache in
+`cacheDirectory()/windguru_cache/spot_coords.json`. Optional erzwingbar via
+`source: "windy" | "windguru"`.
+
+-----
+
+## Widget-Größen
+
+### Small (~170×170pt)
+
+- Header: 🪁 Spotname + Zeit (links) | Kompass 35px (rechts)
+- Main: Wind (38pt) + Böen (25pt), Labels WIND/BÖEN darunter
+- Footer: bestes Kitefenster (Zusammenfassung + 2 Slots) oder Fallback 2h
+- Padding: 12px, Kompass intern 220px gerendert
+
+### Medium
+
+- Nächste 4h stündlich, Tabelle: Zeit / Wind / Böen / Richtung
+
+### Large
+
+- Tagesübersicht 7–19 Uhr, 2h-Raster, Tagestrenner
+
+### accessoryCircular (Sperrbildschirm)
+
+- Einzelnes DrawContext-Bild (kein Stack-Layout, da iOS oft monochrom tönt)
+- Ring (Weiß @55% Alpha), N-Marker oben (Weiß @90%)
+- Punkt auf dem Ring an der Windrichtung des Peak-Slots (wohin der Wind weht — konsistent zur roten Nadel im Homescreen-Kompass)
+- Mitte: Tages-Peak Wind als Zahl + "kn" darunter
+- Peak-Zeitfenster: **09–17 Uhr heute** (`LOCK_HOUR_START` / `LOCK_HOUR_END`)
+- Bei fehlenden Daten: "—" mittig
+
+-----
+
+## Versionierung
+
+```
+2.9.0  GPS-Standort-Modus: Parameter `auto` → nächster bekannter Spot oder Ad-hoc per Reverse-Geocoding; `here`/`gps` → exakte Position; Villasimius zu SPOTS aufgenommen
+2.8.0  Coord-Auto-Resolver für Spots ohne lat/lon (Windguru-Lookup mit Endpunkt- + HTML-Fallback, persistenter Cache); Widget-Parameter akzeptiert beliebige Spot-IDs
+2.7.0  Multi-Source-Routing: Windy (ECMWF) für IT, Windguru für NL; API-Key im Keychain; SPOTS mit lat/lon
+2.6.0  Sperrbildschirm-Widget (accessoryCircular): Ring + Richtungs-Punkt + Tages-Peak (09–17 Uhr) mittig
+2.5.2  Cleanup: unused helpers entfernt (windTrend, dayPeak, nextInWindow, fixedCellRight)
+2.5.1  Kompass: Nadel auf Ring, blauer Ring fix, rote Nadel, nur N/O/S/W
+2.5.0  Windrose-Kompass: klassisches Marine-Design
+2.4.2  Kitefenster: Wind ≥ 10kn, Böen ≤ 30kn
+2.4.0  Layout-Entschlackung: alle Höhenbudgets kalibriert
+2.3.0  Footer: bestes Kitefenster statt nächste 3h
+2.2.0  Header: Spot+Zeit links gestapelt, Kompass rechts
+2.0.0  Apple-Style Redesign, Versionierung, WIDGET_META
+1.x    Stack-Layouts, Offline-Cache, Multi-Spot
+```
+
+-----
+
+## Bekannte Einschränkungen
+
+- Rating-Feld fehlt in GFS-Daten → zeigt "–"
+- `Font.monospacedSystemFont` nicht verfügbar in Scriptable → boldSystemFont
+- `widget.backgroundImage` überschreibt `backgroundGradient` → Small nutzt backgroundImage
+
+-----
+
+## Deployment
+
+Es gibt zwei Wege, das Widget auf dem iPhone laufen zu lassen:
+
+### A) Remote-Loader (empfohlen, self-updating)
+
+`Windguru_Widget_Loader.js` ist ein ~30-zeiliger Bootstrap, der den aktuellen
+`Windguru_Widget.js` aus dem Repo lädt und ausführt. Einmal in Scriptable
+einfügen — danach kommen Updates automatisch beim nächsten Widget-Refresh.
+
+- `SOURCE_URL` zeigt auf den Raw-Link der gewünschten Branch
+- Lokaler Cache (`FileManager.local().cacheDirectory()/windguru_remote_widget.js`)
+  als Offline-Fallback
+- Cache-Bust per `?_=<timestamp>` gegen GitHub-CDN
+- Geladener Code läuft via `new AsyncFunction(code)()` im selben Script-Kontext,
+  erbt also `args`, `config`, `ListWidget`, `DrawContext`, `FileManager`, …
+- Widget-Parameter (Spotname/Index/ID) werden automatisch durchgereicht
+
+### B) Direkt-Kopie
+
+1. `Windguru_Widget.js` in Scriptable App kopieren (iCloud oder direkt)
+2. **Homescreen-Widget:** Scriptable-Widget hinzufügen → Größe wählen → Parameter = Spotname oder Index
+3. **Sperrbildschirm-Widget:** Sperrbildschirm anpassen → Widget hinzufügen → Scriptable → kreisförmige Größe (accessoryCircular) → Parameter = Spotname oder Index
+4. Preview in Scriptable: Play-Button → öffnet Small-Vorschau (für accessoryCircular `config.widgetFamily` setzen)
+
+-----
+
+## Maschinenlesbare Metadaten
+
+Beim manuellen Start wird `WIDGET_META=<JSON>` in die Konsole geloggt.
+Enthält: version, features, windColorScale, dayWindow, dataSource.
